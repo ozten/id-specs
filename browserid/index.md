@@ -38,6 +38,9 @@ Terms
 
   <dt>Backed Identity Assertion</dt>
   <dd>An Identity Assertion combined with the requisite Identity Certificates that enable a Relying Party to fully verify the Identity Assertion.</dd>
+
+  <dt>Issuer</dt>
+  <dd>An identity provider who issues backed identity assertions. Typically a primary, delegated authority, or fallback IdP.</dd>
 </dl>
 
 Objects / Messages
@@ -315,6 +318,14 @@ The argument is an options block which may contain the following properties:
   * `termsOfService` - URL to site's terms of service.
     When provided, a link will be displayed in the sign-in dialog.
   * `oncancel` - a callback that will be invoked if the user refuses to share an identity with the site.
+  * `allowUnverified` *(optional)* - A Boolean, defaults to false, which indicates the RP will accept un-verified identities.
+  * `issuer` *(optional)* - Domain name which replaces the primary and fallback IdPs with a new root of trust. **Usage is discouraged**.
+
+##### Unverified Email
+Some relying parties may wish to accept an untrusted identity using the same UX and later convert their users to a trusted state.
+The optional `allowUnverified` argument to the `request` API enables the Fallback or other IdP to issue an assertion with a slightly different format.
+RPs which use this feature must also use assertion verification logic which can handle either the normal backed assertion format as 
+well as the unverified email format.
 
 #### navigator.id.logout();
 
@@ -421,7 +432,7 @@ The User Agent MUST follow these steps:
 
 * for the given Identity, e.g. `alice@example.com`, determine the domain portion of the identifier, e.g. `example.com`
 * look up the BrowserID configuration at `https://<DOMAIN>/.well-known/browserid`, e.g. in this case `https://example.com/.well-known/browserid`.
-  If this lookup fails, use the Fallback IdP.
+  If this look up fails, use the Fallback IdP.
 * parse the BrowserID configuration file as a JSON object.
 * if the configuration is a proper BrowserID Support document, then store the JSON object as `IDP(identity)` for the requested Identity, with `provisioning` and `authentication` resolved as URLs relative to `https://<domain>`
 * if the configuration is a proper BrowserID Delegated Support document, then proceed recursively with the configuration lookup process for the delegated domain, i.e. the value of the `authority` parameter.
@@ -429,7 +440,16 @@ The User Agent MUST follow these steps:
 
 #### Fallback IdP
 
-The User Agent SHOULD use `browserid.org` as the IdP when IdP Determination proceeds in Fallback Mode.
+The User Agent SHOULD use `login.persona.org` as the IdP when IdP Determination proceeds in Fallback Mode.
+
+##### Issuer
+
+A variation on IdP Determination MUST be followed if `issuer` is provided in the `navigator.id.request` call.
+
+* regardless of Identity, the value of `issuer` MUST be used instead of the domain portion of the identifier, e.g. `{issuer: 'otherdomain.com'}` with `alice@example.com`, will have the BrowserID configuration at `https://otherdomain.com/.well-known/browserid`.
+* if this lookup results in an error, the UA SHOULD stop as this is an error between the specified root certifier and the RP
+* continue processing IdP Determination with the "parse the BrowserID configuration file as a JSON object" step as usual
+* except that there is no usage of a Fallback IdP
 
 ### IdP Provisioning
 
@@ -587,6 +607,9 @@ the email last used on that site.
 4. When the user selects an Identity:
  * check that the associated certificate is still valid.
    If not, initiate a provisioning workflow for that Identity, then continue once it returns successfully.
+  * The UA MUST ensure that the associated certificate is for a Verified Identity when `allowUnverified` is set to `false` (which is the default).
+  * The UA MUST ensure that the associated certificate matches the `issuer` if one is specificed.
+  * The UA MAY store certificates for different issuers in different locations to avoid invalidating certificates, e.g. alice@example.com having issuers of example.com as well as otherdomain.com.
  * generate an Identity Assertion using the requesting site's origin as audience and the current time.
    Bundle with the associated certificate to create a Backed Identity Assertion, and fire a `login` event on the `navigator.id` object with a serialization of the Backed Identity Assertion in the `assertion` field of the event, then terminate the login workflow.
 5. If no Identities are known, or if the user wishes to use a new Identity, the User Agent should prompt the user for this new identity and use it to initiate a Provisioning workflow (see below).
@@ -675,6 +698,12 @@ The domain's JavaScript MUST finally call:
 
 with the Identity Certificate string.
 
+#### allowUnverified
+
+If the IdP is issuing an Identity Certificate for an unverified email, it MUST use a slightly different format.
+
+Instead of the `principal` value having a key of `email` it MUST use `unverified-email`, e.g. {"principal": {"unverified-email": "alice@example.com"}}
+
 Assertion Verification
 ----------------------
 
@@ -692,7 +721,11 @@ A domain that includes the standard port, of 80 for HTTP and 443 for HTTPS, SHOU
 4. If there is more than one Identity Certificate, then reject the assertion unless each certificate after the first one is properly signed by the prior certificate's public key.
 5. If the first certificate (or only certificate when there is only one) is not properly signed by the expected issuer's public key, reject the assertion.
 The expected issuer is either the domain of the certified email address in the last certificate, or the issuer listed in the first certificate if the email-address domain does not support BrowserID.
-6. If the expected issuer was designated by the certificate rather than discovered given the user's email address, then the issuer SHOULD be `browserid.org`, otherwise reject the assertion.
+6. If the expected issuer was designated by the certificate rather than discovered given the user's email address, then the issuer SHOULD be `login.persona.org`, otherwise reject the assertion.
+6.1 The Relying Party MAY also accept the issuer which they've sent in via the `navigator.id.request` call, which effectively replaces `login.persona.org`.
+7. If the Relying Party is using the optional `unverifiedEmail` argument to `navigator.id.request`, then they SHOULD expect the `principal` to be either an `unverified-email` or `email`.
+7.1 For a specific Identity, if the RP had previously accepted a verified Backed Identity Assertion, then it MUST NOT accept an unverified Assertion
+7.2 Using the optional `unverifiedEmail` SHOULD accept an unverified-email as a success case and SHOULD continue to treat the identity as untrusted in the rest of their business logic.
 
 Note that a relying party may, at its discretion, use a verification service that performs these steps and returns a summary of results.
 In that case, the verification service MUST perform all the checks described here.
